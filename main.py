@@ -1,22 +1,21 @@
 import logging
 import os
+import json
 import webbrowser
 from datetime import datetime
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-import json
 
 
 logging.basicConfig(
     filename="app.log",
     level=logging.WARNING,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 
 class FootballClient:
-
     BASE_URL = "https://www.thesportsdb.com/api/v1/json/3"
 
     class APIConnectionError(Exception):
@@ -25,73 +24,53 @@ class FootballClient:
     class RecursoNoEncontrado(Exception):
         pass
 
-    def _hacer_peticion(self, endpoint: str) -> dict:
+    def _pedir(self, endpoint):
         url = f"{self.BASE_URL}/{endpoint}"
 
-        peticion = Request(
+        request = Request(
             url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; ProyectoPOO-Futbol/1.0)"
-            },
+            headers={"User-Agent": "Mozilla/5.0"}
         )
 
         try:
-            with urlopen(peticion, timeout=8) as respuesta:
-                contenido_bruto = respuesta.read()
-                return json.loads(contenido_bruto)
+            with urlopen(request, timeout=8) as response:
+                return json.loads(response.read())
 
-        except HTTPError as error_http:
-            if error_http.code == 404:
-                logging.info("Sin resultados para %s", url)
+        except HTTPError as error:
+            if error.code == 404:
                 raise self.RecursoNoEncontrado(
-                    "No se encontraron resultados para esa búsqueda."
-                ) from error_http
+                    "No se encontraron resultados."
+                ) from error
 
-            logging.error(
-                "Error HTTP al consultar %s: %s",
-                url,
-                error_http
-            )
-
+            logging.error("Error HTTP: %s", error)
             raise self.APIConnectionError(
-                f"El servidor respondió con un error ({error_http.code})."
-            ) from error_http
+                f"Error del servidor: {error.code}"
+            ) from error
 
-        except URLError as error_conexion:
-            logging.error(
-                "Error de conexión al consultar %s: %s",
-                url,
-                error_conexion
-            )
-
+        except URLError as error:
+            logging.error("Error de conexión: %s", error)
             raise self.APIConnectionError(
-                "No fue posible conectarse a la API. "
-                "Verificá tu conexión a internet."
-            ) from error_conexion
+                "No fue posible conectarse a la API."
+            ) from error
 
-        except json.JSONDecodeError as error_json:
-            logging.error(
-                "Respuesta no es JSON válido: %s",
-                error_json
-            )
-
+        except json.JSONDecodeError as error:
+            logging.error("JSON inválido: %s", error)
             raise self.APIConnectionError(
-                "La API devolvió una respuesta malformada."
-            ) from error_json
+                "La API devolvió datos inválidos."
+            ) from error
 
-    def buscar_equipos_por_nombre(self, nombre: str) -> dict:
-        return self._hacer_peticion(
+    def buscar_nombre(self, nombre):
+        return self._pedir(
             f"searchteams.php?t={quote(nombre)}"
         )
 
-    def obtener_equipo_por_id(self, id_equipo: int) -> dict:
-        return self._hacer_peticion(
+    def buscar_id(self, id_equipo):
+        return self._pedir(
             f"lookupteam.php?id={id_equipo}"
         )
 
 
 class Team:
-
     def __init__(
         self,
         nombre,
@@ -99,7 +78,7 @@ class Team:
         liga,
         estadio,
         fundacion,
-        escudo,
+        escudo
     ):
         self.nombre = nombre
         self.pais = pais
@@ -109,464 +88,247 @@ class Team:
         self.escudo = escudo
 
     @classmethod
-    def from_json_data(cls, datos: dict) -> "Team":
-        try:
-            return cls(
-                nombre=datos["strTeam"],
-                pais=datos.get("strCountry", "Desconocido"),
-                liga=datos.get("strLeague", "Desconocida"),
-                estadio=datos.get("strStadium", "Desconocido"),
-                fundacion=datos.get("intFormedYear", "Desconocido"),
-                escudo=datos.get("strBadge", ""),
-            )
+    def from_json(cls, datos):
+        return cls(
+            datos.get("strTeam", "Desconocido"),
+            datos.get("strCountry", "Desconocido"),
+            datos.get("strLeague", "Desconocida"),
+            datos.get("strStadium", "Desconocido"),
+            datos.get("intFormedYear", "Desconocido"),
+            datos.get("strBadge", "")
+        )
 
-        except KeyError as clave_faltante:
-            logging.warning(
-                "Campo faltante en el JSON del equipo: %s",
-                clave_faltante
-            )
-
-            return cls(
-                nombre=datos.get("strTeam", "Desconocido"),
-                pais=datos.get("strCountry", "Desconocido"),
-                liga=datos.get("strLeague", "Desconocida"),
-                estadio=datos.get("strStadium", "Desconocido"),
-                fundacion=datos.get("intFormedYear", "Desconocido"),
-                escudo=datos.get("strBadge", ""),
-            )
-
-    def __str__(self) -> str:
+    def __str__(self):
         return (
             f"{self.nombre}\n"
-            f"  País    : {self.pais}\n"
-            f"  Liga    : {self.liga}\n"
-            f"  Estadio : {self.estadio}\n"
+            f"  País: {self.pais}\n"
+            f"  Liga: {self.liga}\n"
+            f"  Estadio: {self.estadio}\n"
             f"  Fundación: {self.fundacion}"
         )
 
 
 class FootballService:
+    def __init__(self, cliente):
+        self.cliente = cliente
 
-    def __init__(self, cliente: FootballClient):
-        self._cliente = cliente
+    def _convertir(self, datos):
+        return [
+            Team.from_json(equipo)
+            for equipo in datos.get("teams", []) or []
+        ]
 
-    def buscar_por_nombre(self, nombre: str) -> list:
-
-        assert isinstance(nombre, str) and nombre.strip() != "", (
-            "Precondición violada: el nombre del equipo no puede estar vacío."
-        )
+    def buscar_nombre(self, nombre):
+        assert nombre.strip(), "El nombre no puede estar vacío."
 
         try:
-            datos_crudos = self._cliente.buscar_equipos_por_nombre(
-                nombre.strip()
-            )
+            datos = self.cliente.buscar_nombre(nombre.strip())
+            return self._convertir(datos)
 
         except FootballClient.RecursoNoEncontrado:
             return []
 
-        except FootballClient.APIConnectionError as error_api:
-            print(f"⚠️ {error_api}")
+        except FootballClient.APIConnectionError as error:
+            print(f"⚠️ {error}")
             return []
 
-        resultados_json = datos_crudos.get("teams") or []
-
-        equipos = [
-            Team.from_json_data(item)
-            for item in resultados_json
-        ]
-
-        assert isinstance(equipos, list), (
-            "Postcondición violada: el servicio siempre debe devolver una lista."
-        )
-
-        return equipos
-
-    def obtener_por_id(self, id_equipo: int) -> list:
-
-        assert id_equipo >= 1, (
-            "Precondición violada: el ID debe ser mayor o igual a 1."
-        )
+    def buscar_id(self, id_equipo):
+        assert id_equipo >= 1, "El ID debe ser mayor o igual a 1."
 
         try:
-            datos_crudos = self._cliente.obtener_equipo_por_id(
-                id_equipo
-            )
+            datos = self.cliente.buscar_id(id_equipo)
+            return self._convertir(datos)
 
         except FootballClient.RecursoNoEncontrado:
             return []
 
-        except FootballClient.APIConnectionError as error_api:
-            print(f"⚠️ {error_api}")
+        except FootballClient.APIConnectionError as error:
+            print(f"⚠️ {error}")
             return []
-
-        resultados_json = datos_crudos.get("teams") or []
-
-        equipos = [
-            Team.from_json_data(item)
-            for item in resultados_json
-        ]
-
-        assert isinstance(equipos, list), (
-            "Postcondición violada: el servicio siempre debe devolver una lista."
-        )
-
-        return equipos
 
 
 class ReporteHTML:
+    ARCHIVO = "reporte_equipos_futbol.html"
 
-    RUTA_ARCHIVO = "reporte_equipos_futbol.html"
+    CSS = """
+    body {
+        font-family: Arial;
+        background: #071a12;
+        color: white;
+        padding: 30px;
+    }
 
-    _ESTILO_CSS = """
-        body {
-            font-family: Arial, sans-serif;
-            background: #071a12;
-            color: #eeeeee;
-            padding: 2rem;
-        }
+    h1 {
+        color: #55e878;
+        text-align: center;
+    }
 
-        h1 {
-            color: #55e878;
-            text-align: center;
-        }
+    .fecha {
+        text-align: center;
+        color: #aaa;
+    }
 
-        .fecha {
-            text-align: center;
-            color: #aaaaaa;
-            margin-bottom: 2rem;
-        }
+    .grid {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 20px;
+    }
 
-        .grid {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 1.5rem;
-        }
+    .card {
+        background: #10291e;
+        border-radius: 12px;
+        width: 260px;
+        overflow: hidden;
+        box-shadow: 0 4px 12px #000;
+    }
 
-        .card {
-            background: #10291e;
-            border-radius: 12px;
-            overflow: hidden;
-            width: 260px;
-            min-height: 360px;
-            box-shadow: 0 4px 12px rgba(0,0,0,.5);
-            transition: transform .2s;
-        }
+    img {
+        width: 100%;
+        height: 220px;
+        object-fit: contain;
+        background: white;
+    }
 
-        .card:hover {
-            transform: translateY(-5px);
-        }
+    .info {
+        padding: 15px;
+    }
 
-        .card img {
-            width: 100%;
-            height: 220px;
-            object-fit: contain;
-            background: #ffffff;
-            display: block;
-        }
-
-        .card .info {
-            padding: 1rem;
-        }
-
-        .card h2 {
-            font-size: 1.2rem;
-            margin: .2rem 0 .8rem;
-            color: #55e878;
-        }
-
-        .card p {
-            font-size: .9rem;
-            margin: .4rem 0;
-            color: #cccccc;
-        }
-
-        .etiqueta {
-            color: #ffffff;
-            font-weight: bold;
-        }
-
-        .vacio {
-            color: #e0c463;
-            text-align: center;
-            font-size: 1.2rem;
-        }
+    h2 {
+        color: #55e878;
+    }
     """
 
-    def _tarjeta_html(self, equipo: Team) -> str:
-
-        imagen = equipo.escudo
-
-        if not imagen:
-            imagen = (
-                "https://via.placeholder.com/260x220"
-                "?text=Sin+escudo"
-            )
+    def tarjeta(self, equipo):
+        imagen = equipo.escudo or "https://via.placeholder.com/260x220"
 
         return f"""
         <div class="card">
-
-            <img
-                src="{imagen}"
-                alt="Escudo de {equipo.nombre}"
-            >
-
+            <img src="{imagen}" alt="Escudo de {equipo.nombre}">
             <div class="info">
-
                 <h2>{equipo.nombre}</h2>
-
-                <p>
-                    <span class="etiqueta">País:</span>
-                    {equipo.pais}
-                </p>
-
-                <p>
-                    <span class="etiqueta">Liga:</span>
-                    {equipo.liga}
-                </p>
-
-                <p>
-                    <span class="etiqueta">Estadio:</span>
-                    {equipo.estadio}
-                </p>
-
-                <p>
-                    <span class="etiqueta">Fundación:</span>
-                    {equipo.fundacion}
-                </p>
-
+                <p><b>País:</b> {equipo.pais}</p>
+                <p><b>Liga:</b> {equipo.liga}</p>
+                <p><b>Estadio:</b> {equipo.estadio}</p>
+                <p><b>Fundación:</b> {equipo.fundacion}</p>
             </div>
-
         </div>
         """
 
-    def generar_y_abrir(
-        self,
-        equipos: list,
-        titulo: str = "Equipos de Fútbol"
-    ) -> None:
-
+    def generar(self, equipos, titulo):
         if equipos:
-
-            tarjetas = "".join(
-                self._tarjeta_html(equipo)
+            contenido = "".join(
+                self.tarjeta(equipo)
                 for equipo in equipos
             )
-
-            cuerpo = f"""
-                <div class="grid">
-                    {tarjetas}
-                </div>
-            """
-
+            cuerpo = f'<div class="grid">{contenido}</div>'
         else:
-
-            cuerpo = """
-                <p class="vacio">
-                    No se encontraron equipos.
-                </p>
-            """
+            cuerpo = "<h2 style='text-align:center'>No se encontraron equipos.</h2>"
 
         html = f"""
         <!DOCTYPE html>
-
         <html lang="es">
-
         <head>
-
             <meta charset="UTF-8">
-
-            <title>
-                {titulo} - Fútbol
-            </title>
-
-            <style>
-                {self._ESTILO_CSS}
-            </style>
-
+            <title>{titulo}</title>
+            <style>{self.CSS}</style>
         </head>
 
         <body>
-
             <h1>{titulo}</h1>
 
             <p class="fecha">
-                Generado el
-                {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}
+                Generado el {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}
             </p>
 
             {cuerpo}
-
         </body>
-
         </html>
         """
 
-        with open(
-            self.RUTA_ARCHIVO,
-            "w",
-            encoding="utf-8"
-        ) as archivo:
-
+        with open(self.ARCHIVO, "w", encoding="utf-8") as archivo:
             archivo.write(html)
 
-        ruta_absoluta = os.path.abspath(
-            self.RUTA_ARCHIVO
-        )
-
-        webbrowser.open(
-            f"file://{ruta_absoluta}"
-        )
+        ruta = os.path.abspath(self.ARCHIVO)
+        webbrowser.open(f"file://{ruta}")
 
 
-class MenuInteractivo:
+class Menu:
+    def __init__(self, servicio, reporte):
+        self.servicio = servicio
+        self.reporte = reporte
 
-    def __init__(
-        self,
-        servicio: FootballService,
-        reporte: ReporteHTML
-    ):
-        self._servicio = servicio
-        self._reporte = reporte
-
-    def _mostrar_resultados(
-        self,
-        equipos: list,
-        titulo: str
-    ) -> None:
-
-        self._reporte.generar_y_abrir(
-            equipos,
-            titulo
-        )
-
-        cantidad = len(equipos)
-
+    def mostrar(self, equipos, titulo):
+        self.reporte.generar(equipos, titulo)
         print(
-            f"✅ Se generó la página con "
-            f"{cantidad} equipo(s). "
-            f"Se abrió en tu navegador.\n"
+            f"✅ Se generó el reporte con "
+            f"{len(equipos)} equipo(s).\n"
         )
 
-    def _opcion_buscar(self) -> None:
-
-        nombre = input(
-            "Ingresá el nombre del equipo: "
-        )
+    def buscar_nombre(self):
+        nombre = input("Ingresá el nombre del equipo: ")
 
         if not nombre.strip():
-            print(
-                "⚠️ El nombre no puede estar vacío.\n"
-            )
+            print("⚠️ El nombre no puede estar vacío.")
             return
 
-        resultados = self._servicio.buscar_por_nombre(
-            nombre
-        )
+        equipos = self.servicio.buscar_nombre(nombre)
 
-        self._mostrar_resultados(
-            resultados,
+        self.mostrar(
+            equipos,
             f'Búsqueda: "{nombre}"'
         )
 
-    def _opcion_id(self) -> None:
-
+    def buscar_id(self):
         try:
-
             id_equipo = int(
-                input(
-                    "Ingresá el ID del equipo: "
-                )
+                input("Ingresá el ID del equipo: ")
+            )
+
+            equipos = self.servicio.buscar_id(id_equipo)
+
+            self.mostrar(
+                equipos,
+                f"Equipo con ID {id_equipo}"
             )
 
         except ValueError:
+            print("⚠️ Debés ingresar un número.")
 
-            print(
-                "⚠️ Ese no es un número válido.\n"
-            )
+        except AssertionError as error:
+            print(f"⚠️ {error}")
 
-            return
-
-        resultados = self._servicio.obtener_por_id(
-            id_equipo
-        )
-
-        self._mostrar_resultados(
-            resultados,
-            f"Equipo con ID {id_equipo}"
-        )
-
-    def ejecutar(self) -> None:
-
-        opciones = {
-            "1": (
-                "Buscar equipo por nombre",
-                self._opcion_buscar
-            ),
-
-            "2": (
-                "Buscar equipo por ID",
-                self._opcion_id
-            ),
-
-            "3": (
-                "Salir",
-                None
-            ),
-        }
-
+    def ejecutar(self):
         while True:
+            print("""
+=== ⚽ Explorador de Equipos ===
 
-            print(
-                "\n=== ⚽ Explorador de Equipos de Fútbol ==="
-            )
+1. Buscar equipo por nombre
+2. Buscar equipo por ID
+3. Salir
+""")
 
-            for clave, (etiqueta, _) in opciones.items():
+            opcion = input("Elegí una opción: ").strip()
 
-                print(
-                    f"{clave}. {etiqueta}"
-                )
+            if opcion == "1":
+                self.buscar_nombre()
 
-            eleccion = input(
-                "Elegí una opción: "
-            ).strip()
+            elif opcion == "2":
+                self.buscar_id()
 
-            if eleccion == "3":
-
-                print(
-                    "⚽ ¡Hasta la próxima!"
-                )
-
+            elif opcion == "3":
+                print("⚽ ¡Hasta la próxima!")
                 break
 
-            elif eleccion in opciones:
-
-                _, accion = opciones[eleccion]
-
-                accion()
-
             else:
-
-                print(
-                    "⚠️ Opción inválida, "
-                    "intentá de nuevo.\n"
-                )
+                print("⚠️ Opción inválida.")
 
 
-def main() -> None:
-
+def main():
     cliente = FootballClient()
-
-    servicio = FootballService(
-        cliente
-    )
-
+    servicio = FootballService(cliente)
     reporte = ReporteHTML()
-
-    menu = MenuInteractivo(
-        servicio,
-        reporte
-    )
+    menu = Menu(servicio, reporte)
 
     menu.ejecutar()
 
